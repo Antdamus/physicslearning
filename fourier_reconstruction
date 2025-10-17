@@ -1,0 +1,148 @@
+# ifft_teach_fixed.py
+# Discrete-consistent inverse Fourier visualization:
+# - Exact reconstruction via IFFT (full spectrum)
+# - Partial reconstruction with k-window (Gaussian taper) to show smoothing vs ringing
+# - Contributions per FFT bin at current time sample
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import Slider, Button
+
+# ----------------- Signal (edit this) -----------------
+Xmax = 10.0
+Nx   = 2048
+x    = np.linspace(-Xmax, Xmax, Nx, endpoint=False)
+dx   = x[1] - x[0]
+
+# Example: sum of cosines
+f = (1.0*np.cos(1.0*x + np.pi/6)
+   + 0.7*np.cos(2.0*x + np.pi/3)
+   + 0.4*np.cos(3.0*x - np.pi/5))
+
+# ----------------- FFT grid -----------------
+# Discrete FFT (unitary up to a constant). We'll keep numpy's default scaling and be consistent:
+# f[m]  <->  F[n] with: f = IFFT(FFT(f)) exactly (within numerical error).
+F      = np.fft.fft(f)                    # length Nx
+freq   = np.fft.fftfreq(Nx, d=dx)         # cycles per unit x
+k_grid = 2*np.pi*freq                     # angular frequency bins (rad per unit x)
+
+# For plotting by k (centered)
+Fshift = np.fft.fftshift(F)
+kshift = np.fft.fftshift(k_grid)
+
+# Exact reconstruction to verify
+f_exact = np.fft.ifft(F).real             # should equal original real signal
+
+# ----------------- Figure -----------------
+fig = plt.figure(figsize=(12,6))
+gs  = fig.add_gridspec(2, 2, height_ratios=[1,1], width_ratios=[1,1], hspace=0.5, wspace=0.4)
+
+ax_k  = fig.add_subplot(gs[0,0])   # contributions along k (current x_m)
+ax_cp = fig.add_subplot(gs[0,1])   # complex-plane vector sum (tip)
+ax_fx = fig.add_subplot(gs[1,0:2]) # reconstructed signal vs x
+
+# Controls (sliders)
+ax_width = plt.axes([0.15, 0.02, 0.55, 0.03])
+slider_width = Slider(ax_width, "k-window σ (rad/unit)", valmin=0.1, valmax=6.0, valinit=3.0)
+ax_play  = plt.axes([0.75, 0.02, 0.08, 0.04])
+ax_pause = plt.axes([0.85, 0.02, 0.08, 0.04])
+btn_play  = Button(ax_play,  "Play")
+btn_pause = Button(ax_pause, "Pause")
+
+# ----------------- Panels setup -----------------
+# k-contrib panel
+ax_k.axhline(0, linewidth=1)
+ax_k.set_xlim(kshift.min(), kshift.max())
+ax_k.set_title("Contributions per bin at current x:  Re{ F_n e^{i 2π n m / N} }")
+k_line, = ax_k.plot([], [], linewidth=2)
+
+# complex plane panel
+ax_cp.axhline(0, linewidth=1); ax_cp.axvline(0, linewidth=1)
+ax_cp.set_aspect("equal", adjustable="box")
+lim = 0.8*np.sum(np.abs(F))/Nx + 1.0
+ax_cp.set_xlim(-lim, lim); ax_cp.set_ylim(-lim, lim)
+ax_cp.set_title("Vector sum tip  (partial reconstruction)")
+sum_line, = ax_cp.plot([], [], linewidth=2)
+sum_tip,  = ax_cp.plot([], [], 'o')
+
+# waveform panel
+ax_fx.axhline(0, linewidth=1)
+ax_fx.set_xlim(x.min(), x.max())
+ax_fx.set_ylim(1.2*f.min(), 1.2*f.max())
+ax_fx.set_title("Reconstructed signal  (full IFFT vs. partial k-window)")
+full_line, = ax_fx.plot(x, f_exact, linewidth=2, label="full IFFT (exact)")
+part_line, = ax_fx.plot(x, np.zeros_like(x), linestyle='--', label="partial (k-window)")
+marker,    = ax_fx.plot([0],[0], 'o')
+ax_fx.legend(loc='upper right')
+
+# ----------------- Animation state -----------------
+FPS   = 30
+speed = 1.0
+playing = True
+m_idx = 0
+
+def gaussian_k_window(sigma):
+    # centered in k (shifted)
+    return np.exp(-0.5*(kshift/sigma)**2)
+
+def build_partial_time_series(sigma):
+    # Apply Gaussian window in k-space (shifted), then unshift and IFFT
+    Wk      = gaussian_k_window(sigma)
+    F_taper = np.fft.ifftshift(Wk) * F  # back to unshifted order for IFFT
+    f_part  = np.fft.ifft(F_taper)      # complex in general
+    return f_part
+
+# Precompute first partial series
+f_part = build_partial_time_series(slider_width.val)
+
+def init():
+    part_line.set_ydata(np.real(f_part))
+    k_line.set_data([], [])
+    sum_line.set_data([], [])
+    sum_tip.set_data([], [])
+    marker.set_data([x[0]], [np.real(f_part[0])])
+    return k_line, sum_line, sum_tip, part_line, marker
+
+def update(frame):
+    global m_idx, f_part
+    if playing:
+        m_idx = (m_idx + int(speed)) % Nx
+
+    # contributions at this time sample m_idx:
+    # Discrete phase: e^{i 2π n m / N}  (n indexes FFT bins in unshifted order)
+    n = np.arange(Nx)
+    phase = np.exp(1j * 2*np.pi * n * m_idx / Nx)
+    contrib_unshift = F * phase             # complex contributions per bin
+    contrib_shift   = np.fft.fftshift(contrib_unshift)
+    k_line.set_data(kshift, np.real(contrib_shift))
+
+    # complex-plane vector sum for PARTIAL reconstruction at x_m (tip)
+    tip = f_part[m_idx]
+    sum_line.set_data([0, tip.real], [0, tip.imag])
+    sum_tip.set_data([tip.real], [tip.imag])
+
+    # waveform marker
+    marker.set_data([x[m_idx]], [np.real(f_part[m_idx])])
+
+    return k_line, sum_line, sum_tip, marker
+
+def on_width(val):
+    global f_part
+    f_part = build_partial_time_series(val)
+    part_line.set_ydata(np.real(f_part))
+slider_width.on_changed(on_width)
+
+def play(event):
+    global playing
+    playing = True
+def pause(event):
+    global playing
+    playing = False
+btn_play.on_clicked(play)
+btn_pause.on_clicked(pause)
+
+ani = FuncAnimation(fig, update, frames=Nx, init_func=init,
+                    interval=1000/FPS, blit=False, repeat=True)
+plt.tight_layout()
+plt.show()
