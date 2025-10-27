@@ -1,0 +1,201 @@
+# torsion_parallelogram_live.py
+# Visualizes a "torsion parallelogram" on the plane using a synthetic affine connection with torsion.
+# Requires: numpy, matplotlib
+
+import numpy as np
+import matplotlib
+# If needed on Windows, uncomment the next line to force a GUI backend:
+# matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+# ----------------------------
+# Connection with pure torsion on R^2
+# ----------------------------
+# Coordinates: q = (x, y)  ≡ indices (0, 1)
+# We define constant Christoffel symbols with antisymmetry in the lower indices (pure torsion):
+#   Γ^x_{xy} = +τ/2,   Γ^x_{yx} = -τ/2,   all others = 0.
+# Then T^x_{xy} = Γ^x_{xy} - Γ^x_{yx} = τ, and all other torsion components vanish.
+#
+# IMPORTANT: Geodesic equations depend only on the symmetric part Γ^i_{(jk)},
+# so geodesics are still straight lines here. The torsion shows up in PARALLEL TRANSPORT.
+
+def make_Gamma(tau):
+    def Gamma(i, j, k, q):
+        # q is unused (connection is constant)
+        if i == 0 and j == 0 and k == 1:
+            return +0.5 * tau
+        if i == 0 and j == 1 and k == 0:
+            return -0.5 * tau
+        return 0.0
+    return Gamma
+
+# Parallel transport along a straight segment q(t) = p + t * dir, t ∈ [0,1]
+# Solve: dV^i/dt + Γ^i_{jk}(q(t)) * (dq^j/dt) * V^k = 0  with V(0) = V0
+def parallel_transport(V0, p, dir_vec, Gamma, nsteps=60):
+    V = V0.astype(float).copy()
+    q = p.astype(float).copy()
+    dqdt = dir_vec.astype(float).copy()  # constant
+    dt = 1.0 / nsteps
+    for _ in range(nsteps):
+        # Compute dV/dt = - Γ^i_{jk} dq^j/dt V^k
+        dV = np.zeros(2)
+        for i in range(2):
+            acc = 0.0
+            for j in range(2):
+                for k in range(2):
+                    acc += Gamma(i, j, k, q) * dqdt[j] * V[k]
+            dV[i] = -acc
+        V += dt * dV
+        q += dt * dqdt
+    return V
+
+# Build the two-step paths using connection-defined parallel transport for the second edge
+def build_torsion_paths(p0, a, b, tau, nseg=40):
+    Gamma = make_Gamma(tau)
+
+    # Path A: move by 'a', then by (b transported along the first edge)
+    A1 = np.array([p0 + s * a for s in np.linspace(0, 1, nseg)])
+    pA = A1[-1]
+    b_trans = parallel_transport(b, p0, a, Gamma, nsteps=60)
+    A2 = np.array([pA + s * b_trans for s in np.linspace(0, 1, nseg)])
+    A = np.vstack([A1, A2[1:]])  # avoid duplicate corner
+
+    # Path B: move by 'b', then by (a transported along the first edge)
+    B1 = np.array([p0 + s * b for s in np.linspace(0, 1, nseg)])
+    pB = B1[-1]
+    a_trans = parallel_transport(a, p0, b, Gamma, nsteps=60)
+    B2 = np.array([pB + s * a_trans for s in np.linspace(0, 1, nseg)])
+    B = np.vstack([B1, B2[1:]])
+
+    # Gap curve: straight segment from B_end → A_end
+    A_end = A[-1]; B_end = B[-1]
+    G = np.array([B_end + s * (A_end - B_end) for s in np.linspace(0, 1, max(10, nseg//2))])
+
+    # Also return the transported vectors (for arrows)
+    return A, B, G, b_trans, a_trans
+
+# ----------------------------
+# Animation (3D view of flat plane z=0)
+# ----------------------------
+def animate_torsion_parallelogram(p0=(0.0, 0.0), a=(0.8, 0.0), b=(0.0, 0.6), tau=1.0, nseg=40):
+    p0 = np.array(p0, dtype=float)
+    a  = np.array(a,  dtype=float)
+    b  = np.array(b,  dtype=float)
+
+    A, B, G, b_trans, a_trans = build_torsion_paths(p0, a, b, tau, nseg=nseg)
+    nA, nB, nG = len(A), len(B), len(G)
+    total_frames = nA + nB + nG
+
+    fig = plt.figure(figsize=(7, 6), dpi=100)
+    ax  = fig.add_subplot(111, projection='3d')
+    ax.set_title("Torsion parallelogram on the plane\n(geodesics straight; parallel transport has torsion)")
+
+    # Draw a light grid (plane z=0)
+    xs = np.linspace(-1.5, 1.5, 20)
+    ys = np.linspace(-1.5, 1.5, 20)
+    X, Y = np.meshgrid(xs, ys)
+    Z = np.zeros_like(X)
+    ax.plot_wireframe(X, Y, Z, rstride=2, cstride=2, linewidth=0.5, alpha=0.4)
+
+    # View & limits
+    ax.view_init(elev=25, azim=-60)
+    ax.set_xlim(-1.2, 1.2); ax.set_ylim(-1.2, 1.2); ax.set_zlim(-0.3, 0.3)
+
+    # Pre-split for speed
+    Ax, Ay = A[:,0], A[:,1]
+    Bx, By = B[:,0], B[:,1]
+    Gx, Gy = G[:,0], G[:,1]
+
+    # Artists
+    lineA, = ax.plot([], [], [], lw=2, color='tab:blue',   label="Path A: step a, then transported b")
+    lineB, = ax.plot([], [], [], lw=2, color='tab:orange', label="Path B: step b, then transported a")
+    lineG, = ax.plot([], [], [], lw=2, ls='--', color='k', label="Gap")
+    dotA,  = ax.plot([], [], [], 'o', color='tab:blue',   ms=5)
+    dotB,  = ax.plot([], [], [], 'o', color='tab:orange', ms=5)
+
+    # Little arrows at the start showing a and b, and at corners showing transported vectors
+    arrow_scale = 0.5
+    # Start arrows:
+    start_a, = ax.plot([p0[0], p0[0]+arrow_scale*a[0]],
+                       [p0[1], p0[1]+arrow_scale*a[1]],
+                       [0.0,   0.0], color='tab:blue',  lw=2, alpha=0.8)
+    start_b, = ax.plot([p0[0], p0[0]+arrow_scale*b[0]],
+                       [p0[1], p0[1]+arrow_scale*b[1]],
+                       [0.0,   0.0], color='tab:orange',lw=2, alpha=0.8)
+
+    # Transported arrows (drawn once both segments exist)
+    transb_line, = ax.plot([], [], [], color='tab:orange', lw=2, alpha=0.8)
+    transa_line, = ax.plot([], [], [], color='tab:blue',   lw=2, alpha=0.8)
+
+    label = ax.text2D(0.03, 0.95, "", transform=ax.transAxes)
+    ax.legend(loc='upper left')
+
+    def init():
+        lineA.set_data_3d([], [], [])
+        lineB.set_data_3d([], [], [])
+        lineG.set_data_3d([], [], [])
+        dotA.set_data_3d([], [], [])
+        dotB.set_data_3d([], [], [])
+        transb_line.set_data_3d([], [], [])
+        transa_line.set_data_3d([], [], [])
+        label.set_text("")
+        return lineA, lineB, lineG, dotA, dotB, start_a, start_b, transb_line, transa_line, label
+
+    def update(f):
+        if f < nA:
+            # Draw Path A progressively
+            i = f + 1
+            lineA.set_data_3d(Ax[:i], Ay[:i], np.zeros(i))
+            dotA.set_data_3d([Ax[i-1]], [Ay[i-1]], [0.0])
+            # hide B and Gap
+            lineB.set_data_3d([], [], []); dotB.set_data_3d([], [], []); lineG.set_data_3d([], [], [])
+            transb_line.set_data_3d([], [], []); transa_line.set_data_3d([], [], [])
+            label.set_text("Path A: step a, then transported b")
+        elif f < nA + nB:
+            # Freeze A; draw B
+            lineA.set_data_3d(Ax, Ay, np.zeros(nA))
+            dotA.set_data_3d([Ax[-1]], [Ay[-1]], [0.0])
+            k = f - nA + 1
+            lineB.set_data_3d(Bx[:k], By[:k], np.zeros(k))
+            dotB.set_data_3d([Bx[k-1]], [By[k-1]], [0.0])
+            # draw transported vector arrows at corners (once segments complete)
+            # at end of A's first edge: p0 + a, transported b from there
+            pA = p0 + a
+            transb_line.set_data_3d([pA[0], pA[0] + 0.5*b_trans[0]],
+                                    [pA[1], pA[1] + 0.5*b_trans[1]],
+                                    [0.0,   0.0])
+            # at end of B's first edge: p0 + b, transported a from there
+            pB = p0 + b
+            transa_line.set_data_3d([pB[0], pB[0] + 0.5*a_trans[0]],
+                                    [pB[1], pB[1] + 0.5*a_trans[1]],
+                                    [0.0,   0.0])
+            lineG.set_data_3d([], [], [])
+            label.set_text("Path B: step b, then transported a")
+        else:
+            # Draw the gap
+            lineA.set_data_3d(Ax, Ay, np.zeros(nA))
+            dotA.set_data_3d([Ax[-1]], [Ay[-1]], [0.0])
+            lineB.set_data_3d(Bx, By, np.zeros(nB))
+            dotB.set_data_3d([Bx[-1]], [By[-1]], [0.0])
+            k = f - (nA + nB) + 1
+            lineG.set_data_3d(Gx[:k], Gy[:k], np.zeros(k))
+            label.set_text("Gap due to torsion (order-dependent transport)")
+        return lineA, lineB, lineG, dotA, dotB, start_a, start_b, transb_line, transa_line, label
+
+    anim = animation.FuncAnimation(
+        fig, update, init_func=init,
+        frames=total_frames, interval=45, blit=False, cache_frame_data=False
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    # Start point and the two edge vectors:
+    p0 = (0.0, 0.0)
+    a  = (0.8, 0.0)   # first edge (x-direction)
+    b  = (0.0, 0.6)   # second edge (y-direction)
+    tau = 1.0         # torsion strength (try 0.0 → gap disappears)
+    animate_torsion_parallelogram(p0, a, b, tau, nseg=40)

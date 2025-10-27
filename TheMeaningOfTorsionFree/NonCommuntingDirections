@@ -1,0 +1,152 @@
+# noncommuting_surface_sequential_fast.py
+# Animates non-commuting directions on a 3D surface:
+# 1) draw Path A (X→Y), freeze it;
+# 2) draw Path B (Y→X), freeze it;
+# 3) draw the gap between endpoints.
+#
+# Requires: numpy, matplotlib
+
+import numpy as np
+import matplotlib
+# Uncomment the next line if you ever need to force a GUI backend on Windows:
+# matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+# ----------------------------
+# Surface and vector fields
+# ----------------------------
+# Param domain (u, v) → surface in R^3:
+#   R(u, v) = (u, v, 0.3 * sin(u) * cos(v))
+# Vector fields on param domain:
+#   X = ∂/∂u
+#   Y = u * ∂/∂v
+# Lie bracket: [X, Y] = ∂/∂v  (≠ 0), so order matters.
+
+def R(U, V):
+    U = np.asarray(U); V = np.asarray(V)
+    X = U
+    Y = V
+    Z = 0.3 * np.sin(U) * np.cos(V)
+    return np.stack([X, Y, Z], axis=-1)
+
+def sample_u(u0, v0, du, n=25):
+    us = np.linspace(u0, u0 + du, n)
+    vs = np.full_like(us, v0)
+    return R(us, vs)   # (n,3)
+
+def sample_v(u0, v0, dv, n=25):
+    vs = np.linspace(v0, v0 + dv, n)
+    us = np.full_like(vs, u0)
+    return R(us, vs)   # (n,3)
+
+def build_paths(u0=0.0, v0=0.0, eps=1.0, delta=0.7, nseg=25):
+    # Path A: u-step by eps, then v-step by delta*(u0+eps)
+    A1 = sample_u(u0, v0, du=eps, n=nseg)
+    uA, vA = u0 + eps, v0
+    A2 = sample_v(uA, vA, dv=delta*(u0 + eps), n=nseg)
+    A  = np.vstack([A1, A2[1:]])  # avoid duplicate joint
+
+    # Path B: v-step by delta*u0, then u-step by eps
+    B1 = sample_v(u0, v0, dv=delta*u0, n=nseg)
+    uB, vB = u0, v0 + delta*u0
+    B2 = sample_u(uB, vB, du=eps, n=nseg)
+    B  = np.vstack([B1, B2[1:]])
+
+    # Gap: connect B_end → A_end along v at fixed u=u0+eps
+    A_end = A[-1]; B_end = B[-1]
+    u_gap = u0 + eps
+    v_start = B_end[1]; v_end = A_end[1]
+    G = sample_v(u_gap, v_start, dv=(v_end - v_start), n=max(12, nseg//2))
+
+    return A, B, G
+
+# ----------------------------
+# Animation
+# ----------------------------
+def animate_noncommuting_sequential(u0=0.0, v0=0.0, eps=1.0, delta=0.7, nseg=25):
+    A, B, G = build_paths(u0, v0, eps, delta, nseg)
+    nA, nB, nG = len(A), len(B), len(G)
+    total_frames = nA + nB + nG
+
+    fig = plt.figure(figsize=(7, 6), dpi=100)
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_title("Non-commuting directions on a 3D surface\nPath A: X→Y, then Path B: Y→X, then Gap")
+
+    # Lightweight background: wireframe (coarse grid → faster redraw)
+    U, V = np.meshgrid(np.linspace(-1, 10, 30),
+                       np.linspace(-1, 10, 30))
+    S = R(U, V)
+    ax.plot_wireframe(S[...,0], S[...,1], S[...,2], rstride=2, cstride=2, linewidth=0.5, alpha=0.4)
+
+    # View & limits
+    ax.view_init(elev=25, azim=-60)
+    ax.set_xlim(-1, 3); ax.set_ylim(-1,3); ax.set_zlim(-0.7, 0.7)
+
+    # Artists
+    lineA, = ax.plot([], [], [], lw=2, color='tab:blue',   label='Path A (X→Y)')
+    lineB, = ax.plot([], [], [], lw=2, color='tab:orange', label='Path B (Y→X)')
+    lineG, = ax.plot([], [], [], lw=2, ls='--', color='k', label='Gap')
+    dotA,  = ax.plot([], [], [], 'o', color='tab:blue',   ms=5)
+    dotB,  = ax.plot([], [], [], 'o', color='tab:orange', ms=5)
+    label  = ax.text2D(0.03, 0.95, "", transform=ax.transAxes)
+    ax.legend(loc='upper left')
+
+    # Pre-bind full paths (so we just slice arrays in the loop)
+    Ax, Ay, Az = A[:,0], A[:,1], A[:,2]
+    Bx, By, Bz = B[:,0], B[:,1], B[:,2]
+    Gx, Gy, Gz = G[:,0], G[:,1], G[:,2]
+
+    def init():
+        lineA.set_data_3d([], [], [])
+        lineB.set_data_3d([], [], [])
+        lineG.set_data_3d([], [], [])
+        dotA.set_data_3d([], [], [])
+        dotB.set_data_3d([], [], [])
+        label.set_text("")
+        return lineA, lineB, lineG, dotA, dotB, label
+
+    def update(f):
+        if f < nA:
+            # Draw Path A progressively
+            i = f + 1
+            lineA.set_data_3d(Ax[:i], Ay[:i], Az[:i])
+            dotA.set_data_3d([Ax[i-1]], [Ay[i-1]], [Az[i-1]])
+            # Hide others
+            lineB.set_data_3d([], [], [])
+            dotB.set_data_3d([], [], [])
+            lineG.set_data_3d([], [], [])
+            label.set_text("Drawing Path A (X → Y)")
+        elif f < nA + nB:
+            # Freeze A; draw B progressively
+            lineA.set_data_3d(Ax, Ay, Az)
+            dotA.set_data_3d([Ax[-1]], [Ay[-1]], [Az[-1]])
+            k = f - nA + 1
+            lineB.set_data_3d(Bx[:k], By[:k], Bz[:k])
+            dotB.set_data_3d([Bx[k-1]], [By[k-1]], [Bz[k-1]])
+            lineG.set_data_3d([], [], [])
+            label.set_text("Drawing Path B (Y → X)")
+        else:
+            # Freeze A and B; draw Gap progressively
+            lineA.set_data_3d(Ax, Ay, Az)
+            dotA.set_data_3d([Ax[-1]], [Ay[-1]], [Az[-1]])
+            lineB.set_data_3d(Bx, By, Bz)
+            dotB.set_data_3d([Bx[-1]], [By[-1]], [Bz[-1]])
+            k = f - (nA + nB) + 1
+            lineG.set_data_3d(Gx[:k], Gy[:k], Gz[:k])
+            label.set_text("Drawing the gap (A end → B end)")
+        return lineA, lineB, lineG, dotA, dotB, label
+
+    anim = animation.FuncAnimation(
+        fig, update, init_func=init,
+        frames=total_frames, interval=35, blit=False, cache_frame_data=False
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    # Tweak if you like: u0, v0, eps, delta, nseg
+    # u0=0.0 makes the first Y-step vanish (so non-commutation is obvious).
+    animate_noncommuting_sequential(u0=1, v0=0.0, eps=1.0, delta=1.0, nseg=25)
